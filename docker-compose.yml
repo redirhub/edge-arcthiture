@@ -1,0 +1,187 @@
+services:
+  # web cache
+  varnish:
+    image: example/pineapple:2.0
+    container_name: varnish
+    depends_on:
+      - backend
+      - backendup
+    restart: unless-stopped
+    ports:
+      - "${HTTPPORT:-80}:80"
+      - "81:80"
+      - "88:80"
+      - "8000:80"
+      - "8080:80"
+      - "8888:80"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cluster-https.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.cluster-https.entrypoints=websecure"
+      - "traefik.http.routers.cluster-https.tls=true"
+      - "traefik.http.routers.cluster-http.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.cluster-http.entrypoints=web"
+      - "traefik.http.services.cluster.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.forcehttps.redirectscheme.scheme=https"
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/module=apache"
+      - "co.elastic.logs/fileset.stdout=access"
+      - "co.elastic.logs/fileset.stderr=error"
+      - com.centurylinklabs.watchtower.enable=true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  filebeat:
+    image: example/avocado:2.0
+    container_name: filebeat
+    restart: unless-stopped
+    depends_on:
+      - varnish
+    user: root
+    volumes:
+      - "/var/lib/docker/containers:/var/lib/docker/containers:ro"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    environment:
+      LOGREDIS: "${LOGREDIS}"
+      LOGREDIS_PASSWORD: "${LOGREDIS_PASSWORD}"
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  backend:
+    image: example/apple:2.0
+    container_name: backend
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+    ports:
+      - "8001:80"
+    volumes:
+      - "./routes:/var/www/html/core/.node_route_config"
+      - "./certs:/var/www/html/core/.node_certs"
+      - "./docker-compose.yml:/var/www/html/core/docker-compose.yml"
+      - "./.env:/var/www/html/core/.env"
+      - "./config.json:/var/www/html/core/config.json"
+      - "./cluster_register:/var/www/html/cluster_register"
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "1"
+    healthcheck:
+      test: nc -z 127.0.0.1 80 || exit 1
+      interval: 60s
+      timeout: 2s
+      retries: 3
+      start_period: 2s
+
+  backendup:
+    image: example/apple:2.0
+    container_name: backendup
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+    ports:
+      - "8002:80"
+    volumes:
+      - "./routes:/var/www/html/core/.node_route_config"
+      - "./certs:/var/www/html/core/.node_certs"
+      - "./docker-compose.yml:/var/www/html/core/docker-compose.yml"
+      - "./.env:/var/www/html/core/.env"
+      - "./config.json:/var/www/html/core/config.json"
+      - "./cluster_register:/var/www/html/cluster_register"
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "1"
+    healthcheck:
+      test: nc -z 127.0.0.1 80 || exit 1
+      interval: 60s
+      timeout: 2s
+      retries: 3
+      start_period: 2s
+
+  mongodb:
+    image: mongo:6.0.5
+    container_name: mongodb
+    restart: unless-stopped
+    # ports:
+    #   - "8917:27017"
+    volumes:
+      - "mongodb-data:/data/db"
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  watchtower:
+    container_name: watchtower
+    image: containrrr/watchtower
+    restart: always
+    environment:
+      - TZ=${TZ}
+      - WATCHTOWER_INCLUDE_STOPPED=true
+      - WATCHTOWER_REVIVE_STOPPED=true
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=600
+      - WATCHTOWER_DEBUG=true
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "1"
+
+  traefik:
+    image: traefik
+    container_name: traefik
+    restart: unless-stopped
+    depends_on:
+      - varnish
+    network_mode: "host"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./routes:/data/traefik"
+      - "./certs:/data/tls"
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "1"
+    command:
+      # api
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--api.debug=false"
+      - "--ping=false"
+      # log
+      - "--log=true"
+      - "--log.level=ERROR"
+      - "--accesslog=true"
+      # docker
+      - "--providers.docker=true"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.docker.exposedByDefault=false"
+      # file
+      - "--providers.file=true"
+      - "--providers.file.directory=/data/traefik"
+      - "--providers.file.watch=true"
+      # entryPoints
+      - "--entryPoints.web.address=:8"
+      - "--entryPoints.traefik.address=:8821"
+      - "--entryPoints.websecure.address=:443"
+
+volumes:
+  cluster-data:
+  mongodb-data:
+  letsencrypt-data:
+  traefik-data:
+  tls-data:
